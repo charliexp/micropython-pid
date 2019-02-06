@@ -20,17 +20,19 @@ class PID:
 
     # Constants
     SAMPLE_TIME_DEFAULT = 100
-    FORWARD = 0
+    DIRECT = 0
     REVERSE = 1
     OUTPUT_MIN_DEFAULT = 0 # Micropython PWM min
     OUTPUT_MAX_DEFAULT = 1023  # Micropython PWM max
     MANUAL = 0
     AUTOMATIC = 1
+    RAW = 0
+    FILTERED = 1
     
     # Constructor
-    def __init__(self, params, kP, kI, kD, direction = FORWARD):
+    def __init__(self, params, kP, kI, kD, direction = DIRECT, debugEnabled = False):        
         # Set default values
-        self.direction = self.FORWARD
+        self.direction = self.DIRECT
         self.kP = 0.0
         self.kI = 0.0
         self.kD = 0.0
@@ -38,11 +40,17 @@ class PID:
         self.isRaw = True
         self.outputMin = 0
         self.outputMax = 0
+        self.pTerm = 0
         self.iTerm = 0
+        self.dTerm = 0
         self.history = [0] * 30
+        self.lastOutput = 0
+        self.computeCount = 0
+        self.filterConstant = 0
         
         # Set input values
         self.params = params
+        self.debugEnabled = debugEnabled
 
         # Set output limits
         self.setOutputLimits(self.OUTPUT_MIN_DEFAULT, self.OUTPUT_MAX_DEFAULT)
@@ -57,42 +65,90 @@ class PID:
         self.setTunings(kP, kI, kD)
 
         # Set last time run
-        self.lastTime = utime.ticks_ms() - self.sampleTime
+        self.lastTime = utime.ticks_diff(utime.ticks_ms(), self.sampleTime)
         
-        print("Created")
-        print("Sample time " + str(self.sampleTime))
-        print("Input " + str(self.params.input))
-        print("Output " + str(self.params.output))
-        print("Setpoint " + str(self.params.setpoint))
-        print("kP " + str(self.kP))
-        print("kI " + str(self.kI))
-        print("kD " + str(self.kD))
-        print("Output min " + str(self.outputMin))
-        print("Output max " + str(self.outputMax))
-        print("iTerm " + str(self.iTerm))
-        print("Last time " + str(self.lastTime))
+        self.debug("Created")
+        self.debug("Sample time " + str(self.sampleTime))
+        self.debug("Input " + str(self.params.input))
+        self.debug("Output " + str(self.params.output))
+        self.debug("Setpoint " + str(self.params.setpoint))
+        self.debug("kP " + str(self.kP))
+        self.debug("kI " + str(self.kI))
+        self.debug("kD " + str(self.kD))
+        self.debug("Output min " + str(self.outputMin))
+        self.debug("Output max " + str(self.outputMax))
+        self.debug("iTerm " + str(self.iTerm))
+        self.debug("Last time " + str(self.lastTime))
 
     # Compute
     def compute(self):
-        print("\n###############")
-        print("Computing")
+        self.debug("\n###############")
+        self.debug("Computing")
 
         # If not auto, return
         if not self.inAuto:
-            print("Return not in auto")
-            print("###############\n")
+            self.debug("Return not in auto")
+            self.debug("###############\n")
             return False
 
         now = utime.ticks_ms()
-        timeChange = now - self.lastTime
-        print("Now " + str(now))
-        print("Time change " + str(timeChange))
-        
-        return True
+        timeChange = utime.ticks_diff(now, self.lastTime)
+        self.debug("Now " + str(now))
+        self.debug("Time change " + str(timeChange))
+
+        if timeChange >= self.sampleTime:
+            self.computeCount += 1
+            
+            if self.computeCount == 10:
+                for i in range(29, 0, -1):
+                    self.history[i] = self.history[i - 1]
+                self.history[0] = self.params.input
+                self.computeCount = 0
+
+            input = self.params.input
+            error = self.params.setpoint - self.params.input
+            self.debug("Input " + str(input))
+            self.debug("Error " + str(error))
+
+            self.iTerm += (self.kI * error)
+            if self.iTerm > self.outputMax:
+                self.iTerm = self.outputMax
+            elif self.iTerm < self.outputMin:
+                self.iTerm = self.outputMin
+            self.debug("i Term " + str(self.iTerm))
+
+            dInput = (self.history[0] - self.history[29]) / (5*60);
+            self.debug("d Input " + str(dInput))
+
+            self.pTerm = self.kP * error
+            self.debug("p Term " + str(self.pTerm))
+
+            self.dTerm = -self.kD * dInput
+            self.debug("d Term " + str(self.dTerm))
+
+            output = self.pTerm + self.iTerm + self.dTerm
+            if output > self.outputMax:
+                output = self.outputMax
+            elif output < self.outputMin:
+                output = self.outputMin
+            if not self.isRaw and self.filterConstant != 0:
+                output = self.lastOutput + ((self.sampleTime / 1000) / self.filterConstant) * (output - self.lastOutput)
+                
+            self.debug("Output " + str(output))
+            self.params.output = output
+            
+            self.lastOutput = output
+            self.lastTime = now
+
+            self.debug("###############\n")
+            return True
+
+        self.debug("###############\n")
+        return False
 
     # Initialize
     def initialize(self):
-        print("Initializing")
+        self.debug("Initializing")
         self.initializeHistory()
         self.iTerm = self.params.output
         if self.iTerm > self.outputMax:
@@ -102,14 +158,14 @@ class PID:
             
     # Initialize histor
     def initializeHistory(self):
-        print("Initializing history")
+        self.debug("Initializing history")
         self.history[0] = self.params.input
         for i in range(1, 30):
             self.history[i] = self.history[0]
             
     # Set tunings
     def setTunings(self, kP, kI, kD):
-        print("Setting tunings")
+        self.debug("Setting tunings")
 
         if kP < 0 or kI < 0 or kD < 0:
             return
@@ -127,6 +183,7 @@ class PID:
 
     # Set output limits
     def setOutputLimits(self, minLimit, maxLimit):
+        self.debug("Setting output limits")
         self.outputMin = minLimit
         self.outputMax = maxLimit
 
@@ -142,17 +199,33 @@ class PID:
 
     # Set mode
     def setMode(self, mode):
+        self.debug("Setting mode")
         newAuto = (mode == self.AUTOMATIC)
         if newAuto != self.inAuto:
-            print("Changing mode")
+            self.debug("Changing mode")
             self.initialize()
         self.inAuto = newAuto
+
+    # Set output type
+    def setOutputType(self, outputType):
+        self.debug("Setting output type")
+        if outputType == self.RAW:
+            self.isRaw = True
+        elif outputType == self.FILTERED:
+            self.isRaw = False
         
     # Set direction
     def setDirection(self, direction):
-        print("Setting direction")
+        self.debug("Setting direction")
         if self.inAuto and direction != self.direction:
+            self.debug("Changing direction")
             self.kP = 0 - self.kP
             self.kI = 0 - self.kI
             self.kD = 0 - self.kD
         self.direction = direction
+
+    # Debug
+    def debug(self, s):
+        if self.debugEnabled:
+            print(s)
+    
